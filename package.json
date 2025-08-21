@@ -1,0 +1,13 @@
+{
+  "name": "my-security-project",
+  "version": "1.0.0",
+  "description": "A simple app to test DAST scanning",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}
