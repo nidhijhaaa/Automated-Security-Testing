@@ -1,169 +1,116 @@
-name: Security Scanning (SAST & SCA)
+name: Full Security Pipeline (SCA, SAST, Compliance, DAST)
 
 on:
   pull_request:
     branches: [ "main" ]
 
 jobs:
+  # JOB 1: Dependency Scanning (SCA) for Node.js
   dependency-scan:
+    name: SCA - Dependency Review
     runs-on: ubuntu-latest
-    # This job will always pass for Terraform repos since there's no package.json
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '18'
 
-      - name: Check for package.json and skip if not found
-        id: check-package
-        run: |
-          if [ -f "package.json" ]; then
-            echo "package_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "package_exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Install dependencies (if package.json exists)
-        if: steps.check-package.outputs.package_exists == 'true'
+      - name: Install dependencies
         run: npm install
 
-      - name: Run Dependabot SCA scan (if package.json exists)
-        if: steps.check-package.outputs.package_exists == 'true'
+      - name: Scan for vulnerable dependencies
         uses: actions/dependency-review-action@v3
 
-      - name: Skip SCA scan (no package.json)
-        if: steps.check-package.outputs.package_exists == 'false'
-        run: echo "No package.json found - SCA scan skipped successfully"
-        # This step ensures the job passes even without Node.js dependencies
-
+  # JOB 2: Static Analysis (SAST) for Node.js Source Code
   codeql-sast-scan:
+    name: SAST - CodeQL Analysis
     runs-on: ubuntu-latest
     permissions:
       security-events: write
       actions: read
       contents: read
-    # This job will pass for Terraform-only repos
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Check for source code files
-        id: check-src
-        run: |
-          if [ -d "src" ] || [ -d "app" ] || [ -f "*.js" ] || [ -f "*.ts" ] || [ -f "*.py" ]; then
-            echo "source_code_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "source_code_exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Initialize CodeQL (if source code exists)
-        if: steps.check-src.outputs.source_code_exists == 'true'
+      - name: Initialize CodeQL
         uses: github/codeql-action/init@v2
         with:
+          # Analyze JavaScript/TypeScript in this repository
           languages: javascript
 
-      - name: Perform CodeQL Analysis (if source code exists)
-        if: steps.check-src.outputs.source_code_exists == 'true'
+      - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v2
 
-      - name: Skip CodeQL scan (no source code)
-        if: steps.check-src.outputs.source_code_exists == 'false'
-        run: echo "No source code files found - CodeQL scan skipped successfully"
-        # This step ensures the job passes for Terraform-only repos
-
-  # JOB 3: Compliance as Code Scanning - THIS WILL FAIL FOR NON-COMPLIANT TERRAFORM
+  # JOB 3: Infrastructure Compliance Scanning
   compliance-scan:
-    name: Compliance Scan (Checkov)
+    name: Compliance - Checkov Scan
     runs-on: ubuntu-latest
-    # This job will FAIL when Terraform violations are found
     steps:
-      # Step 1: Obtain the code from the repository
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Execute Checkov static analysis
       - name: Run Checkov scan
         uses: bridgecrewio/checkov-action@v12
         with:
-          # Scan the entire repository for IaC files
           directory: ./
-          # Display detailed results in the workflow log
           quiet: false
-          # Fail the job if any compliance violations are found
           fail_on: FAILURE
-        # A non-zero exit code from Checkov will fail this step
 
-      # Optional: Add a success message if you want (though Checkov failure will prevent this from running)
-      - name: Compliance check passed
-        if: success()
-        run: echo "All Terraform resources are compliant!"
-
-  # JOB 4: Dynamic Application Security Testing (DAST) with OWASP ZAP
+  # JOB 4: Dynamic Application Security Testing (DAST) 
   dast-scan:
-    name:  DAST - OWASP ZAP Scan
+    name: DAST - OWASP ZAP Scan
     runs-on: ubuntu-latest
-    # This job will only run if there's a package.json (Node.js app)
-    needs: [dependency-scan] # Wait for dependency-scan to finish its checks
+    # This job requires the app's dependencies to be installed first
+    needs: [dependency-scan]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Check for package.json
-        id: check-package-dast
-        run: |
-          if [ -f "package.json" ]; then
-            echo "package_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "package_exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Set up Node.js (if package.json exists)
-        if: steps.check-package-dast.outputs.package_exists == 'true'
+      - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '18'
 
-      - name: Install dependencies (if package.json exists)
-        if: steps.check-package-dast.outputs.package_exists == 'true'
-        run: npm ci
+      - name: Install dependencies
+        run: npm install
 
-      # Step 1: Start the application and keep it running in the background
-      - name: Start target application (if package.json exists)
-        if: steps.check-package-dast.outputs.package_exists == 'true'
+      # Step 1: Start the application server
+      - name: Start target application
         run: |
           echo "Starting the application server..."
           nohup npm start > server.log 2>&1 &
-          echo $! > server.pid    # Save the process ID to a file
-          sleep 10                # Give the server ample time to bind to the port
+          echo $! > server.pid
+          sleep 10
 
-          # Check if the server is actually running
+          # Verify the server is running
           if curl -f http://localhost:3000 > /dev/null 2>&1; then
-            echo " Application server is running successfully on port 3000"
-            cat server.log        # Output the server logs for debugging
+            echo "Application server is running successfully on port 3000"
+            echo "--- Server logs ---"
+            cat server.log
+            echo "-------------------"
           else
-            echo " Application failed to start. Server logs:"
+            echo "Application failed to start. Server logs:"
             cat server.log
             exit 1
           fi
         env:
           PORT: 3000
 
-      # Step 2: Run OWASP ZAP Full Scan against the running app
-      - name: OWASP ZAP Full Scan (if package.json exists)
-        if: steps.check-package-dast.outputs.package_exists == 'true'
+      # Step 2: Run OWASP ZAP Full Scan
+      - name: OWASP ZAP Full Scan
         uses: zaproxy/action-full-scan@v0.10.0
         with:
           target: 'http://localhost:3000'
-          rules_file_name: '.zap/rules.tsv'
-          cmd_options: '-a -T 60' # -a: show all results, -T: timeout in minutes
-          fail_action: false       # Don't fail the build on first run, just report
+          cmd_options: '-a -T 60'  # Show all results, 60min timeout
+          fail_action: false        # Report findings but don't fail the build
 
-      # Step 3: Always stop the application server (cleanup)
+      # Step 3: Cleanup - Stop server always
       - name: Stop application server
-        if: always() # Run this step even if previous steps failed
+        if: always()
         run: |
           echo "Stopping application server..."
           if [ -f server.pid ]; then
@@ -172,17 +119,12 @@ jobs:
           fi
           echo "Cleanup complete."
 
-      # Step 4: Upload server logs as an artifact for debugging
-      - name: Upload server logs
-        if: always() # Always upload logs, even on failure
-        uses: actions/upload-artifact@v3
+      # Step 4: Upload results as artifacts
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: server-logs
+          name: zap-scan-results
           path: |
             server.log
             .zap/report.html
-
-      # Step 5: Skip DAST scan if no Node.js app is found
-      - name: Skip DAST scan (no package.json)
-        if: steps.check-package-dast.outputs.package_exists == 'false'
-        run: echo "No package.json found - DAST scan skipped successfully"
