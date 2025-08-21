@@ -87,6 +87,7 @@ jobs:
           target: 'http://localhost:3000'
           cmd_options: '-a' # Show all results (Pass, Warn, Fail)
           fail_action: false # Report findings but don't fail the build
+          create_issue: false
 
       - name: Stop application server
         if: always()
